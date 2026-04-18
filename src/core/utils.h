@@ -2,8 +2,11 @@
 
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
+#define GLM_ENABLE_EXPERIMENTAL
 #include <glm/glm.hpp>
+#include <glm/gtx/hash.hpp>
 #include <array>
+#include <functional>
 
 // Make my own definitions of glm::vec
 #define Vector2 glm::vec2
@@ -54,6 +57,12 @@ struct Vertex {
 
 		return attributeDescriptions;
 	}
+
+	bool operator==(const Vertex& other) const {
+		return pos == other.pos &&
+			color == other.color &&
+			texCoord == other.texCoord;
+	}
 };
 
 struct UniformBufferObject {
@@ -87,3 +96,14 @@ struct Image {
 	int width, height, channels;
 	void* data;
 };
+
+// Provide a hash specialization
+namespace std {
+	template<> struct hash<Vertex> {
+		size_t operator()(Vertex const& vertex) const {
+			return ((hash<Vector3>()(vertex.pos) ^
+				(hash<Vector3>()(vertex.color) << 1)) >> 1) ^
+				(hash<Vector2>()(vertex.texCoord) << 1);
+		}
+	};
+}

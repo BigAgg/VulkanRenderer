@@ -10,7 +10,9 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
+#include "debug/debuginfo.h"
 #include "utils/logging.h"
+#include "utils.h"
 
 /*
 * Checking if a struct member has a value when it is of type std::optional
@@ -37,7 +39,6 @@ struct SwapChainSupportDetails {
 
 class App {
 public:
-  void run();
   void init(int width, int height, const char* name);
   void beginDrawing();
   void endDrawing();
@@ -47,8 +48,6 @@ public:
 private:
   void initWindow(int width, int height, const char* name);
   void initVulkan();
-  void mainLoop();
-  void drawFrame();
   void cleanup();
   void cleanupSwapChain();
 
@@ -104,6 +103,8 @@ private:
   VkFormat findDepthFormat();
   VkFormat findSupportedFormat(const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features);
   bool hasStencilComponent(VkFormat format);
+  // Model loading
+  void loadModel();
 
   // Buffer recording
   void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
@@ -160,9 +161,11 @@ private:
   uint32_t m_currentFrame = 0;
 
   // vertex buffer
+  std::vector<Vertex> m_vertices;
   VkBuffer m_vertexBuffer;
   VkDeviceMemory m_vertexBufferMemory;
   // index buffer
+  std::vector<uint32_t> m_indices;
   VkBuffer m_indexBuffer;
   VkDeviceMemory m_indexBufferMemory;
 
@@ -190,4 +193,8 @@ private:
 
   // Helper functions
   static std::vector<char> readFile(const std::string& filename);
+
+  // debuggers for timing purpose later on
+  DrawFrameInfo m_drawFrameInfo;
+  InitInfo m_initInfo;
 };

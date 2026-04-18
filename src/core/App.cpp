@@ -19,28 +19,15 @@
 #include <chrono>
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb/stb_image.h>
-
-// Testing array data
-// TODO: Remove later
-const std::vector<Vertex> vertices = {
-		{{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
-		{{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
-		{{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
-		{{-0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}},
-
-		{{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
-		{{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
-		{{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
-		{{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}},
-};
-
-const std::vector<uint16_t> indices = {
-		0, 1, 2, 2, 3, 0,
-		4, 5, 6, 6, 7, 4
-};
+#define TINYOBJLOADER_IMPLEMENTATION
+#include <tiny_obj_loader.h>
+#include <unordered_map>
+#include "utils/timer.h" 
 
 static const uint32_t WIDTH = 800;
 static const uint32_t HEIGHT = 600;
+const std::string MODEL_PATH = "models/viking_room.obj";
+const std::string TEXTURE_PATH = "textures/viking_room.png";
 static const int MAX_FRAMES_IN_FLIGHT = 2;
 
 static const std::vector<const char*> s_validationLayers = {
@@ -75,16 +62,20 @@ static void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMesse
 	}
 }
 
-void App::run() {
-	initWindow(WIDTH, HEIGHT, "Vulkan");
-	initVulkan();
-	mainLoop();
-	cleanup();
-}
-
 void App::init(int width, int height, const char* name){
+	m_initInfo = {};
+	m_initInfo.width = width;
+	m_initInfo.height = height;
+	m_initInfo.name = name;
+	Timer t;
+	t.Start();
 	initWindow(width, height, name);
+	m_initInfo.initWindow = t.GetDeltaMilliseconds();
 	initVulkan();
+	m_initInfo.initVulkan = t.GetDeltaMilliseconds();
+	t.Stop();
+	m_initInfo.total = t.GetElapsedMilliseconds();
+	printInitInfo(m_initInfo, "App::init");
 }
 
 void App::beginDrawing() {
@@ -95,6 +86,9 @@ void App::beginDrawing() {
 }
 
 void App::endDrawing() {
+	m_drawFrameInfo = {};
+	Timer t;
+	t.Start();
 	// acquire an image from the swapchain
 	uint32_t imageIndex;
 	VkResult result = vkAcquireNextImageKHR(m_device, m_swapChain, UINT64_MAX, m_imageAvailableSemaphores[m_currentFrame], VK_NULL_HANDLE, &imageIndex);
@@ -106,6 +100,8 @@ void App::endDrawing() {
 	else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
 		throw std::runtime_error("Failed to acquire swap chain image!");
 	}
+	m_drawFrameInfo.acquireImage = t.GetDeltaMilliseconds();
+
 	// Updating uniform buffer
 	updateUniformBuffer(m_currentFrame);
 	// only reset fence manually
@@ -113,6 +109,8 @@ void App::endDrawing() {
 	// reset the command buffer
 	vkResetCommandBuffer(m_commandBuffers[m_currentFrame], 0);
 	recordCommandBuffer(m_commandBuffers[m_currentFrame], imageIndex);
+	m_drawFrameInfo.updateBuffers = t.GetDeltaMilliseconds();
+
 	// Submitting the command buffer
 	VkSubmitInfo submitInfo{};
 	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -130,6 +128,7 @@ void App::endDrawing() {
 	if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, m_inFlightFences[m_currentFrame]) != VK_SUCCESS) {
 		throw std::runtime_error("Failed to submit draw command buffer!");
 	}
+	m_drawFrameInfo.submitCommandBuffer = t.GetDeltaMilliseconds();
 
 	// Presentation
 	VkPresentInfoKHR presentInfo{};
@@ -152,8 +151,11 @@ void App::endDrawing() {
 	else if (result != VK_SUCCESS) {
 		throw std::runtime_error("Failed to present swap chain image!");
 	}
+	m_drawFrameInfo.presentation = t.GetDeltaMilliseconds();
 
 	m_currentFrame = (m_currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+	t.Stop();
+	m_drawFrameInfo.total = t.GetElapsedMilliseconds();
 }
 
 void App::closeWindow() {
@@ -195,6 +197,7 @@ void App::initVulkan() {
 	createTextureImage();
 	createTextureImageView();
 	createTextureSampler();
+	loadModel();
 	createVertexBuffer();
 	createIndexBuffer();
 	createUniformBuffers();
@@ -204,84 +207,9 @@ void App::initVulkan() {
 	createSyncObjects();
 }
 
-void App::mainLoop() {
-	// Main window call
-	while (!glfwWindowShouldClose(m_window)) {
-		glfwPollEvents();
-		drawFrame();
-	}
-
-	vkDeviceWaitIdle(m_device);
-}
-
-void App::drawFrame() {
-	// Start of the frame wait until last drawing call is finished
-	vkWaitForFences(m_device, 1, &m_inFlightFences[m_currentFrame], VK_TRUE, UINT64_MAX);
-	// acquire an image from the swapchain
-	uint32_t imageIndex;
-	VkResult result = vkAcquireNextImageKHR(m_device, m_swapChain, UINT64_MAX, m_imageAvailableSemaphores[m_currentFrame], VK_NULL_HANDLE, &imageIndex);
-	
-	if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-		recreateSwapChain();
-		return;
-	}
-	else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
-		throw std::runtime_error("Failed to acquire swap chain image!");
-	}
-	// Updating uniform buffer
-	updateUniformBuffer(m_currentFrame);
-	// only reset fence manually
-	vkResetFences(m_device, 1, &m_inFlightFences[m_currentFrame]);
-	// reset the command buffer
-	vkResetCommandBuffer(m_commandBuffers[m_currentFrame], 0);
-	recordCommandBuffer(m_commandBuffers[m_currentFrame], imageIndex);
-
-	// Submitting the command buffer
-	VkSubmitInfo submitInfo{};
-	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-
-	VkSemaphore waitSemaphores[] = { m_imageAvailableSemaphores[m_currentFrame]};
-	VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-	submitInfo.waitSemaphoreCount = 1;
-	submitInfo.pWaitSemaphores = waitSemaphores;
-	submitInfo.pWaitDstStageMask = waitStages;
-	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers = &m_commandBuffers[m_currentFrame];
-	VkSemaphore signalSemaphores[] = { m_imageRenderFinishedSemaphores[imageIndex]};
-	submitInfo.signalSemaphoreCount = 1;
-	submitInfo.pSignalSemaphores = signalSemaphores;
-	if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, m_inFlightFences[m_currentFrame]) != VK_SUCCESS) {
-		throw std::runtime_error("Failed to submit draw command buffer!");
-	}
-
-	// Presentation
-	VkPresentInfoKHR presentInfo{};
-	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-	presentInfo.waitSemaphoreCount = 1;
-	presentInfo.pWaitSemaphores = signalSemaphores;
-
-	VkSwapchainKHR swapChains[] = { m_swapChain };
-	presentInfo.swapchainCount = 1;
-	presentInfo.pSwapchains = swapChains;
-	presentInfo.pImageIndices = &imageIndex;
-	// pResults lets you record an array with results so you can check for failures in multiple swapchains
-	presentInfo.pResults = nullptr;	// Optional
-	result = vkQueuePresentKHR(m_presentQueue, &presentInfo);
-
-	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || m_framebufferResized) {
-		m_framebufferResized = false;
-		recreateSwapChain();
-	}
-	else if (result != VK_SUCCESS) {
-		throw std::runtime_error("Failed to present swap chain image!");
-	}
-
-	m_currentFrame = (m_currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
-}
-
 void App::cleanup() {
 	// Clearing / Destroying the window
-	logging::loginfo("App::cleanup Cleaning up window!");
+	logging::loginfo("[App::cleanup] Cleaning up window!");
 	cleanupSwapChain();
 	vkDestroySampler(m_device, m_textureSampler, nullptr);
 	vkDestroyImageView(m_device, m_textureImageView, nullptr);
@@ -382,7 +310,7 @@ void App::createInstance(){
 	if (result != VK_SUCCESS) {
 		throw std::runtime_error("Failed to create instance!");
 	}
-	logging::loginfo("App::createInstance Instance successfully created!");
+	logging::loginfo("[App::createInstance] Instance successfully created!");
 }
 
 void App::setupDebugMessenger(){
@@ -415,7 +343,7 @@ void App::pickPhysicalDevice(){
 	// Get the amount of devices that suit our needs
 	uint32_t deviceCount = 0;
 	vkEnumeratePhysicalDevices(m_instance, &deviceCount, nullptr);
-	logging::loginfo("App::pickPhysicalDevice Devices found: %d", deviceCount);
+	logging::loginfo("[App::pickPhysicalDevice] Devices found: %d", deviceCount);
 
 	if (deviceCount == 0) {
 		throw std::runtime_error("Failed to find GPUs with Vulkan support!");
@@ -731,9 +659,9 @@ void App::createRenderPass(){
 
 void App::createGraphicsPipeline() {
 	std::vector<char> vertShaderCode = readFile("shaders/shader.vert.spv");
-	logging::loginfo("App::createGraphicsPipeline Loaded Vertex Shader (%d bytes)", vertShaderCode.size());
+	logging::loginfo("[App::createGraphicsPipeline] Loaded Vertex Shader (%d bytes)", vertShaderCode.size());
 	std::vector<char> fragShaderCode = readFile("shaders/shader.frag.spv");
-	logging::loginfo("App::createGraphicsPipeline Loaded Fragment Shader (%d bytes)", fragShaderCode.size());
+	logging::loginfo("[App::createGraphicsPipeline] Loaded Fragment Shader (%d bytes)", fragShaderCode.size());
 
 	VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
 	VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -1014,7 +942,7 @@ void App::recreateSwapChain(){
 }
 
 void App::createVertexBuffer() {
-	VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
+	VkDeviceSize bufferSize = sizeof(m_vertices[0]) * m_vertices.size();
 	// Create the staging buffer
 	// Staging buffers are used to copy our vertecies from the cpu to the gpu
 	VkBuffer stagingBuffer;
@@ -1024,7 +952,7 @@ void App::createVertexBuffer() {
 	// Copy the vertex data to the staging buffer
 	void* data;
 	vkMapMemory(m_device, stagingBufferMemory, 0, bufferSize, 0, &data);
-	memcpy(data, vertices.data(), bufferSize);
+	memcpy(data, m_vertices.data(), bufferSize);
 	vkUnmapMemory(m_device, stagingBufferMemory);
 
 	// Create the vertex buffer as destination
@@ -1038,7 +966,7 @@ void App::createVertexBuffer() {
 }
 
 void App::createIndexBuffer(){
-	VkDeviceSize bufferSize = sizeof(indices[0]) * indices.size();
+	VkDeviceSize bufferSize = sizeof(m_indices[0]) * m_indices.size();
 
 	VkBuffer stagingBuffer;
 	VkDeviceMemory stagingBufferMemory;
@@ -1047,7 +975,7 @@ void App::createIndexBuffer(){
 
 	void* data;
 	vkMapMemory(m_device, stagingBufferMemory, 0, bufferSize, 0, &data);
-	memcpy(data, indices.data(), (size_t)bufferSize);
+	memcpy(data, m_indices.data(), (size_t)bufferSize);
 	vkUnmapMemory(m_device, stagingBufferMemory);
 
 	createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
@@ -1366,7 +1294,7 @@ uint32_t App::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properti
 void App::createTextureImage(){
 	// Load the image
 	Image image;
-	stbi_uc* pixels = stbi_load("textures/texture.jpg", &image.width, &image.height, &image.channels, STBI_rgb_alpha);
+	stbi_uc* pixels = stbi_load(TEXTURE_PATH.c_str(), &image.width, &image.height, &image.channels, STBI_rgb_alpha);
 	VkDeviceSize imageSize = image.width * image.height * 4;
 
 	if (!pixels) {
@@ -1592,6 +1520,43 @@ bool App::hasStencilComponent(VkFormat format){
 	return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT;
 }
 
+void App::loadModel(){
+	tinyobj::attrib_t attrib;
+	std::vector<tinyobj::shape_t> shapes;
+	std::vector<tinyobj::material_t> materials;
+	std::string err;
+
+	if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &err, MODEL_PATH.c_str())) {
+		throw std::runtime_error(err);
+	}
+
+	std::unordered_map<Vertex, uint32_t> uniqueVertices{};
+
+	for (const auto& shape : shapes) {
+		for (const auto& index : shape.mesh.indices) {
+			Vertex vertex{};
+
+			vertex.pos = {
+				attrib.vertices[3 * index.vertex_index + 0],
+				attrib.vertices[3 * index.vertex_index + 1],
+				attrib.vertices[3 * index.vertex_index + 2]
+			};
+
+			vertex.texCoord = {
+				attrib.texcoords[2 * index.texcoord_index + 0],
+				1.0f - attrib.texcoords[2 * index.texcoord_index + 1]
+			};
+			vertex.color = { 1.0f, 1.0f, 1.0f };
+
+			if (uniqueVertices.count(vertex) == 0) {
+				uniqueVertices[vertex] = static_cast<uint32_t>(m_vertices.size());
+				m_vertices.push_back(vertex);
+			}
+			m_indices.push_back(uniqueVertices[vertex]);
+		}
+	}
+}
+
 VkCommandBuffer App::beginSingleTimeCommands(){
 	VkCommandBufferAllocateInfo allocInfo{};
 	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -1654,7 +1619,7 @@ void App::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex
 	VkBuffer vertexBuffers[] = { m_vertexBuffer };
 	VkDeviceSize offsets[] = { 0 };
 	vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-	vkCmdBindIndexBuffer(commandBuffer, m_indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+	vkCmdBindIndexBuffer(commandBuffer, m_indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 	VkViewport viewport{};
 	viewport.x = 0.0f;
 	viewport.y = 0.0f;
@@ -1671,7 +1636,7 @@ void App::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex
 	// now draw command
 	//vkCmdDraw(commandBuffer, static_cast<uint32_t>(vertices.size()), 1, 0, 0);
 	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, &m_descriptorSets[m_currentFrame], 0, nullptr);
-	vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
+	vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(m_indices.size()), 1, 0, 0, 0);
 	vkCmdEndRenderPass(commandBuffer);
 
 	if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
@@ -1730,7 +1695,7 @@ std::vector<char> App::readFile(const std::string& filename){
 	std::ifstream file(filename, std::ios::ate | std::ios::binary);
 
 	if (!file.is_open()) {
-		logging::logerror("App::readFile Failed to open file %s", filename.c_str());
+		logging::logerror("[App::readFile] Failed to open file %s", filename.c_str());
 		throw std::runtime_error("Failed to open file!");
 	}
 
